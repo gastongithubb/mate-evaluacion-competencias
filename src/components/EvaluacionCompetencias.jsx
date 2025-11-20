@@ -6,6 +6,30 @@ import './EvaluacionCompetencias.css'
 
 const STORAGE_KEY = 'mate_evaluacion_progreso'
 
+// Preguntas adicionales para profundizar en mejora/empeora
+const PREGUNTAS_PROFUNDIZACION = {
+  mejora: [
+    '¿Qué acciones específicas tomó el asesor que llevaron a esta mejora?',
+    '¿Qué factores del entorno o del equipo contribuyeron a este avance?',
+    '¿Cómo se puede mantener y potenciar esta mejora en el futuro?',
+    '¿Qué recursos o apoyo adicional necesitaría para seguir mejorando?'
+  ],
+  empeora: [
+    '¿Qué factores específicos causaron este retroceso?',
+    '¿Hubo cambios en el entorno, procesos o equipo que impactaron negativamente?',
+    '¿Qué acciones se pueden tomar para revertir esta situación?',
+    '¿Qué tipo de apoyo o recursos necesita el asesor para recuperar el nivel anterior?'
+  ]
+}
+
+// Competencias que son solo para Líderes (no para Asesores)
+const COMPETENCIAS_SOLO_LIDERES = [
+  'colaboracion_remota',
+  'mindset_digital',
+  'liderazgo_konecta',
+  'prospectiva_estrategica'
+]
+
 const COMPETENCIAS = [
   {
     id: 'mentalidad_agil',
@@ -154,18 +178,25 @@ const COMPETENCIAS = [
 
 function EvaluacionCompetencias() {
   const [nombreAsesor, setNombreAsesor] = useState('')
+  const [tipoEvaluacion, setTipoEvaluacion] = useState(null) // 'asesor' o 'lider'
   const [tieneMATEAnterior, setTieneMATEAnterior] = useState(null)
   const [archivoMATE, setArchivoMATE] = useState(null)
   const [datosMATEAnterior, setDatosMATEAnterior] = useState(null)
   const [procesandoPDF, setProcesandoPDF] = useState(false)
-  const [paso, setPaso] = useState('inicio') // inicio, mate_anterior, resumen_mate, preguntas, resultado
+  const [paso, setPaso] = useState('inicio') // inicio, tipo_evaluacion, mate_anterior, resumen_mate, preguntas, resultado
   const [respuestas, setRespuestas] = useState({})
   const [evoluciones, setEvoluciones] = useState({}) // {competencia_id: {estado: 'mantiene'|'mejora'|'empeora', razon: ''}}
   const [perfilGenerado, setPerfilGenerado] = useState(null)
   const [cargando, setCargando] = useState(false)
   const [error, setError] = useState(null)
   const [listoParaGuardar, setListoParaGuardar] = useState(false)
+  const [metricas, setMetricas] = useState('') // Métricas del asesor para comparaciones
   const fileInputRef = useRef(null)
+
+  // Filtrar competencias según el tipo de evaluación
+  const competenciasFiltradas = tipoEvaluacion === 'asesor'
+    ? COMPETENCIAS.filter(comp => !COMPETENCIAS_SOLO_LIDERES.includes(comp.id))
+    : COMPETENCIAS
 
   // Cargar datos guardados al iniciar (solo una vez)
   useEffect(() => {
@@ -174,11 +205,13 @@ function EvaluacionCompetencias() {
       if (datosGuardados) {
         const datos = JSON.parse(datosGuardados)
         setNombreAsesor(datos.nombreAsesor || '')
+        setTipoEvaluacion(datos.tipoEvaluacion || null)
         setTieneMATEAnterior(datos.tieneMATEAnterior ?? null)
         setDatosMATEAnterior(datos.datosMATEAnterior || null)
         setPaso(datos.paso || 'inicio')
         setRespuestas(datos.respuestas || {})
         setEvoluciones(datos.evoluciones || {})
+        setMetricas(datos.metricas || '')
       }
       // Marcar como listo para guardar después de cargar (o si no hay datos)
       setListoParaGuardar(true)
@@ -199,17 +232,19 @@ function EvaluacionCompetencias() {
     try {
       const datosAGuardar = {
         nombreAsesor,
+        tipoEvaluacion,
         tieneMATEAnterior,
         datosMATEAnterior,
         paso,
         respuestas,
-        evoluciones
+        evoluciones,
+        metricas
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(datosAGuardar))
     } catch (error) {
       console.error('Error al guardar en localStorage:', error)
     }
-  }, [nombreAsesor, tieneMATEAnterior, datosMATEAnterior, paso, respuestas, evoluciones, listoParaGuardar])
+  }, [nombreAsesor, tipoEvaluacion, tieneMATEAnterior, datosMATEAnterior, paso, respuestas, evoluciones, metricas, listoParaGuardar])
 
   const limpiarLocalStorage = () => {
     localStorage.removeItem(STORAGE_KEY)
@@ -249,76 +284,190 @@ function EvaluacionCompetencias() {
         yPos += 10
       }
 
-      // Contenido del perfil - limpiar primero
-      const perfilLimpio = perfilGenerado
-        .split('\n')
-        .map(line => {
-          let linea = line.trim()
-          // Eliminar # de markdown headers
-          linea = linea.replace(/^#+\s*/, '')
-          // Eliminar líneas que solo contienen guiones o caracteres especiales
-          if (/^[-=_*]{3,}$/.test(linea) || /^[-=_*]+$/.test(linea)) {
-            return null // Marcar para eliminar
-          }
-          return linea
-        })
-        .filter(line => line !== null && line.length > 0) // Eliminar líneas vacías y marcadas
-        .join('\n')
-
-      doc.setFontSize(11)
-      doc.setTextColor(0, 0, 0)
+      // Contenido del perfil - procesar con mejor detección de jerarquías
+      const lineas = perfilGenerado.split('\n')
       const lineHeight = 6
-      const lines = doc.splitTextToSize(perfilLimpio, maxWidth)
+      const lineHeightSmall = 5
 
-      lines.forEach((line) => {
+      lineas.forEach((lineaOriginal) => {
         // Verificar si necesitamos una nueva página
-        if (yPos > pageHeight - margin - 10) {
+        if (yPos > pageHeight - margin - 15) {
           doc.addPage()
           yPos = margin
         }
 
-        // Detectar títulos y subtítulos
-        const trimmedLine = line.trim()
+        let linea = lineaOriginal.trim()
         
-        // Saltar líneas que solo son separadores
-        if (/^[-=_*]{2,}$/.test(trimmedLine)) {
+        // Saltar líneas vacías o separadores
+        if (!linea || /^[-=_*]{3,}$/.test(linea)) {
+          yPos += lineHeightSmall
           return
         }
-        
-        if (/^\d+\.\s+[A-ZÁÉÍÓÚÑ]/.test(trimmedLine) || 
-            (trimmedLine.length < 80 && trimmedLine === trimmedLine.toUpperCase() && trimmedLine.length > 5 && !trimmedLine.includes(':'))) {
-          // Es un título
-          doc.setFontSize(14)
+
+        // Detectar títulos principales (## o números seguidos de punto)
+        if (/^##\s+/.test(linea) || /^\d+\.\s+[A-ZÁÉÍÓÚÑ]/.test(linea)) {
+          yPos += 5 // Espacio antes del título
+          linea = linea.replace(/^##\s+/, '').replace(/^\d+\.\s+/, '')
+          doc.setFontSize(16)
           doc.setFont('helvetica', 'bold')
-          doc.setTextColor(40, 0, 200) // #2800c8
-          doc.text(trimmedLine, margin, yPos)
-          yPos += lineHeight + 2
+          doc.setTextColor(15, 15, 114) // #0F0F72
+          const lineasTexto = doc.splitTextToSize(linea, maxWidth)
+          lineasTexto.forEach((l, idx) => {
+            if (yPos > pageHeight - margin - 10) {
+              doc.addPage()
+              yPos = margin
+            }
+            doc.text(l, margin, yPos)
+            yPos += lineHeight + 2
+          })
+          // Línea decorativa
+          doc.setDrawColor(166, 135, 255) // #A687FF
+          doc.setLineWidth(0.5)
+          doc.line(margin, yPos - 2, pageWidth - margin, yPos - 2)
+          yPos += 3
           doc.setFontSize(11)
           doc.setFont('helvetica', 'normal')
           doc.setTextColor(0, 0, 0)
-        } else if (trimmedLine.endsWith(':') && trimmedLine.length < 60) {
-          // Es un subtítulo
+          return
+        }
+
+        // Detectar subtítulos (### o texto que termina en :)
+        if (/^###\s+/.test(linea) || (linea.endsWith(':') && linea.length < 70 && !linea.startsWith('-') && !linea.startsWith('•'))) {
+          yPos += 3 // Espacio antes del subtítulo
+          linea = linea.replace(/^###\s+/, '')
+          doc.setFontSize(13)
+          doc.setFont('helvetica', 'bold')
+          doc.setTextColor(40, 0, 200) // #2800c8
+          const lineasTexto = doc.splitTextToSize(linea, maxWidth)
+          lineasTexto.forEach((l) => {
+            if (yPos > pageHeight - margin - 10) {
+              doc.addPage()
+              yPos = margin
+            }
+            doc.text(l, margin, yPos)
+            yPos += lineHeight + 1
+          })
+          doc.setFontSize(11)
+          doc.setFont('helvetica', 'normal')
+          doc.setTextColor(0, 0, 0)
+          return
+        }
+
+        // Detectar niveles de competencia destacados
+        if (/Nivel:\s*(Excelente Desarrollo|Desarrollado|Necesita Desarrollo)/i.test(linea) ||
+            /\*\*Nivel:\*\*\s*(Excelente Desarrollo|Desarrollado|Necesita Desarrollo)/i.test(linea)) {
+          yPos += 2
           doc.setFontSize(12)
           doc.setFont('helvetica', 'bold')
-          doc.setTextColor(40, 0, 200) // #2800c8
-          doc.text(trimmedLine, margin, yPos)
-          yPos += lineHeight + 1
+          // Color según el nivel
+          if (/Excelente Desarrollo/i.test(linea)) {
+            doc.setTextColor(46, 125, 50) // Verde oscuro
+          } else if (/Desarrollado/i.test(linea)) {
+            doc.setTextColor(25, 118, 210) // Azul
+          } else {
+            doc.setTextColor(211, 47, 47) // Rojo
+          }
+          linea = linea.replace(/\*\*/g, '').replace(/Nivel:\s*/i, 'Nivel: ')
+          const lineasTexto = doc.splitTextToSize(linea, maxWidth)
+          lineasTexto.forEach((l) => {
+            if (yPos > pageHeight - margin - 10) {
+              doc.addPage()
+              yPos = margin
+            }
+            doc.text(l, margin, yPos)
+            yPos += lineHeight + 1
+          })
           doc.setFontSize(11)
           doc.setFont('helvetica', 'normal')
           doc.setTextColor(0, 0, 0)
-        } else {
-          // Texto normal
-          // Procesar negritas (**texto** o *texto*) y limpiar caracteres markdown
-          let texto = trimmedLine
-            .replace(/^#+\s*/, '') // Eliminar # restantes
-            .replace(/^[-=_*]{2,}\s*/, '') // Eliminar separadores markdown
-          texto = texto.replace(/\*\*([^*]+)\*\*/g, '$1') // Remover ** pero mantener el texto
-          texto = texto.replace(/\*([^*]+)\*/g, '$1') // Remover * pero mantener el texto
+          return
+        }
+
+        // Detectar listas (viñetas)
+        if ((linea.startsWith('-') || linea.startsWith('•') || linea.startsWith('*')) && !linea.startsWith('**')) {
+          linea = linea.replace(/^[-•*]\s*/, '')
+          // Procesar negritas en listas
+          linea = linea.replace(/\*\*([^*]+)\*\*/g, '$1')
+          linea = linea.replace(/\*([^*]+)\*/g, '$1')
           
-          if (texto.trim().length > 0) {
-            doc.text(texto, margin, yPos)
+          doc.setFontSize(11)
+          doc.setFont('helvetica', 'normal')
+          doc.setTextColor(0, 0, 0)
+          
+          // Viñeta
+          doc.text('•', margin, yPos)
+          const lineasTexto = doc.splitTextToSize(linea, maxWidth - 10)
+          lineasTexto.forEach((l, idx) => {
+            if (yPos > pageHeight - margin - 10) {
+              doc.addPage()
+              yPos = margin
+            }
+            doc.text(l, margin + 5, yPos)
             yPos += lineHeight
+          })
+          return
+        }
+
+        // Texto normal
+        linea = linea
+          .replace(/^#+\s*/, '')
+          .replace(/^[-=_*]{2,}\s*/, '')
+        
+        // Procesar negritas manteniendo el formato
+        const partes = linea.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g)
+        let xPos = margin
+        
+        partes.forEach((parte) => {
+          if (!parte) return
+          
+          if (parte.startsWith('**') && parte.endsWith('**')) {
+            // Negrita doble
+            const texto = parte.slice(2, -2)
+            doc.setFont('helvetica', 'bold')
+            doc.setFontSize(11)
+            doc.setTextColor(0, 0, 0)
+            const width = doc.getTextWidth(texto)
+            if (xPos + width > pageWidth - margin) {
+              yPos += lineHeight
+              xPos = margin
+            }
+            doc.text(texto, xPos, yPos)
+            xPos += width
+          } else if (parte.startsWith('*') && parte.endsWith('*') && parte.length > 2) {
+            // Negrita simple
+            const texto = parte.slice(1, -1)
+            doc.setFont('helvetica', 'bold')
+            doc.setFontSize(11)
+            doc.setTextColor(0, 0, 0)
+            const width = doc.getTextWidth(texto)
+            if (xPos + width > pageWidth - margin) {
+              yPos += lineHeight
+              xPos = margin
+            }
+            doc.text(texto, xPos, yPos)
+            xPos += width
+          } else if (parte.trim()) {
+            // Texto normal
+            doc.setFont('helvetica', 'normal')
+            doc.setFontSize(11)
+            doc.setTextColor(0, 0, 0)
+            const lineasTexto = doc.splitTextToSize(parte, maxWidth - (xPos - margin))
+            lineasTexto.forEach((l, idx) => {
+              if (yPos > pageHeight - margin - 10) {
+                doc.addPage()
+                yPos = margin
+                xPos = margin
+              }
+              doc.text(l, xPos, yPos)
+              yPos += lineHeight
+              xPos = margin
+            })
+            xPos = margin
           }
+        })
+        
+        if (xPos > margin) {
+          yPos += lineHeight
         }
       })
 
@@ -333,8 +482,13 @@ function EvaluacionCompetencias() {
 
   const handleIniciar = () => {
     if (nombreAsesor.trim()) {
-      setPaso('mate_anterior')
+      setPaso('tipo_evaluacion')
     }
+  }
+
+  const handleSeleccionarTipo = (tipo) => {
+    setTipoEvaluacion(tipo)
+    setPaso('mate_anterior')
   }
 
   const handleTieneMATEAnterior = (tiene) => {
@@ -383,7 +537,7 @@ function EvaluacionCompetencias() {
     const respuestasIniciales = {}
     const evolucionesIniciales = {}
     
-    COMPETENCIAS.forEach(comp => {
+    competenciasFiltradas.forEach(comp => {
       // Si hay MATE anterior, inicializar evolución por competencia (no por pregunta)
       if (datosMATEAnterior?.competencias[comp.id]) {
         evolucionesIniciales[comp.id] = {
@@ -432,18 +586,30 @@ function EvaluacionCompetencias() {
       // Si cambia el estado y es "mantiene", limpiar las respuestas de esa competencia
       if (campo === 'estado') {
         if (value === 'mantiene') {
-          // Limpiar respuestas de esta competencia
+          // Limpiar respuestas de esta competencia (preguntas normales y de profundización)
           const nuevasRespuestas = { ...respuestas }
-          COMPETENCIAS.find(c => c.id === competenciaId)?.preguntas.forEach((_, idx) => {
+          competenciasFiltradas.find(c => c.id === competenciaId)?.preguntas.forEach((_, idx) => {
             delete nuevasRespuestas[`${competenciaId}_${idx}`]
+          })
+          // Limpiar también preguntas de profundización
+          const preguntasProfundizacion = PREGUNTAS_PROFUNDIZACION[value] || []
+          preguntasProfundizacion.forEach((_, idx) => {
+            delete nuevasRespuestas[`${competenciaId}_prof_${idx}`]
           })
           setRespuestas(nuevasRespuestas)
         } else if (value === 'mejora' || value === 'empeora') {
-          // Inicializar respuestas vacías para esta competencia
+          // Inicializar respuestas vacías para esta competencia (preguntas normales y de profundización)
           const nuevasRespuestas = { ...respuestas }
-          COMPETENCIAS.find(c => c.id === competenciaId)?.preguntas.forEach((_, idx) => {
+          competenciasFiltradas.find(c => c.id === competenciaId)?.preguntas.forEach((_, idx) => {
             if (!nuevasRespuestas[`${competenciaId}_${idx}`]) {
               nuevasRespuestas[`${competenciaId}_${idx}`] = ''
+            }
+          })
+          // Inicializar preguntas de profundización
+          const preguntasProfundizacion = PREGUNTAS_PROFUNDIZACION[value] || []
+          preguntasProfundizacion.forEach((_, idx) => {
+            if (!nuevasRespuestas[`${competenciaId}_prof_${idx}`]) {
+              nuevasRespuestas[`${competenciaId}_prof_${idx}`] = ''
             }
           })
           setRespuestas(nuevasRespuestas)
@@ -476,7 +642,7 @@ function EvaluacionCompetencias() {
         })
       }
 
-      const respuestasTexto = COMPETENCIAS.map(comp => {
+      const respuestasTexto = competenciasFiltradas.map(comp => {
         const infoAnterior = datosMATEAnterior?.competencias[comp.id]
         const evolucion = evoluciones[comp.id]
         
@@ -494,7 +660,7 @@ function EvaluacionCompetencias() {
           if (evolucion.estado === 'mantiene') {
             competenciaTexto += `\nEvaluación: Mantiene el mismo nivel del MATE anterior. No se requieren preguntas adicionales.`
           } else {
-            // Si mejora o empeora, incluir todas las respuestas
+            // Si mejora o empeora, incluir todas las respuestas (normales y de profundización)
             const respuestasComp = comp.preguntas.map((pregunta, idx) => {
               const key = `${comp.id}_${idx}`
               const respuesta = respuestas[key]
@@ -504,6 +670,19 @@ function EvaluacionCompetencias() {
             
             if (respuestasComp) {
               competenciaTexto += `\n\n${respuestasComp}`
+            }
+            
+            // Agregar preguntas de profundización
+            const preguntasProfundizacion = PREGUNTAS_PROFUNDIZACION[evolucion.estado] || []
+            const respuestasProfundizacion = preguntasProfundizacion.map((pregunta, idx) => {
+              const key = `${comp.id}_prof_${idx}`
+              const respuesta = respuestas[key]
+              if (!respuesta) return null
+              return `P (Profundización): ${pregunta}\nR: ${respuesta}`
+            }).filter(Boolean).join('\n\n')
+            
+            if (respuestasProfundizacion) {
+              competenciaTexto += `\n\nPreguntas de Profundización:\n${respuestasProfundizacion}`
             }
           }
         } else {
@@ -526,9 +705,19 @@ function EvaluacionCompetencias() {
         return ct.includes('Estado en MATE anterior') || ct.includes('P:') || ct.includes('Evaluación:')
       }).join('\n')
 
-      const prompt = `Eres un experto en evaluación de competencias laborales de Konecta. Basándote en el Manual de Desarrollo de Competencias de Konecta CONO SUR 2025 y las siguientes respuestas del líder sobre el asesor ${nombreAsesor}, genera un perfil completo de competencias.
+      // Construir sección de métricas si están disponibles
+      let seccionMetricas = ''
+      if (metricas && metricas.trim()) {
+        const tipoPersona = tipoEvaluacion === 'asesor' ? 'ASESOR' : 'LÍDER'
+        seccionMetricas = `\n\nMÉTRICAS DEL ${tipoPersona}:\n${metricas}\n\nUtiliza estas métricas para hacer comparaciones más completas y contextualizar el análisis de competencias.`
+      }
 
-${contextoMATEAnterior}
+      const tipoPersona = tipoEvaluacion === 'asesor' ? 'asesor' : 'líder'
+      const prompt = `Eres un experto en evaluación de competencias laborales de Konecta. Basándote en el Manual de Desarrollo de Competencias de Konecta CONO SUR 2025 y las siguientes respuestas del líder sobre el ${tipoPersona} ${nombreAsesor}, genera un perfil completo de competencias.
+
+IMPORTANTE: Esta evaluación está dirigida a un ${tipoPersona === 'asesor' ? 'ASESOR' : 'LÍDER'}. ${tipoEvaluacion === 'asesor' ? 'Las competencias de Liderazgo Konecta, Colaboración Remota, Mindset Digital y Prospectiva Estratégica NO aplican para asesores y no deben ser evaluadas.' : 'Todas las competencias aplican, incluyendo las de liderazgo.'}
+
+${contextoMATEAnterior}${seccionMetricas}
 
 El Manual de Competencias de Konecta organiza las competencias en cuatro categorías:
 - PERSONAL: Cómo es la persona y cómo se maneja (Mentalidad Ágil, Engagement, Confianza)
@@ -541,11 +730,19 @@ ${datosMATEAnterior ? 'EVALUACIÓN ACTUAL (comparando con MATE anterior):' : 'EV
 ${respuestasTexto}
 
 Por favor, genera un perfil detallado y profesional que incluya:
-1. Resumen ejecutivo del perfil del asesor${datosMATEAnterior ? ' comparando con el MATE anterior' : ''}
-2. Evaluación detallada por cada competencia evaluada, indicando el nivel de desarrollo (Excelente Desarrollo, Desarrollado, o Necesita Desarrollo)${datosMATEAnterior ? ' y la evolución respecto al MATE anterior' : ''}
-3. Fortalezas identificadas agrupadas por categoría
+1. Resumen ejecutivo del perfil del asesor${datosMATEAnterior ? ' comparando con el MATE anterior' : ''}${metricas ? ', incorporando las métricas proporcionadas' : ''}
+2. Evaluación detallada por cada competencia evaluada, indicando claramente el nivel de desarrollo (Excelente Desarrollo, Desarrollado, o Necesita Desarrollo)${datosMATEAnterior ? ' y la evolución respecto al MATE anterior' : ''}. Para cada competencia, muestra el nivel de forma visible y destacada.
+3. Fortalezas identificadas agrupadas por categoría, destacando las aptitudes más desarrolladas
 4. Áreas de oportunidad con recomendaciones específicas${datosMATEAnterior ? ', destacando mejoras o retrocesos respecto al MATE anterior' : ''}
 5. Plan de desarrollo con acciones concretas basadas en el manual${datosMATEAnterior ? ' y considerando la evolución mostrada' : ''}
+6. PLAN DE TRABAJO Y OBJETIVOS PARA EL PRÓXIMO SEMESTRE: Genera automáticamente un plan de trabajo estructurado con objetivos SMART (Específicos, Medibles, Alcanzables, Relevantes y con Tiempo definido) para el próximo semestre, basado en el análisis realizado. Incluye objetivos por competencia que necesite desarrollo, con acciones concretas, plazos y métricas de seguimiento.
+
+IMPORTANTE PARA EL FORMATO:
+- Usa jerarquías visuales claras: títulos principales con ##, subtítulos con ###, y secciones bien diferenciadas
+- Destaca los niveles de competencia de forma visible (ej: **Nivel: Excelente Desarrollo**)
+- Estructura el documento de manera que pueda ser entregado directamente al representante
+- Usa listas numeradas o con viñetas para facilitar la lectura
+- Separa claramente cada sección con espacios y títulos descriptivos
 
 Formatea la respuesta de manera clara, profesional y estructurada, usando el lenguaje y los criterios del Manual de Competencias de Konecta.`
 
@@ -564,6 +761,7 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
 
   const handleNuevaEvaluacion = () => {
     setNombreAsesor('')
+    setTipoEvaluacion(null)
     setTieneMATEAnterior(null)
     setArchivoMATE(null)
     setDatosMATEAnterior(null)
@@ -572,6 +770,7 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
     setEvoluciones({})
     setPerfilGenerado(null)
     setError(null)
+    setMetricas('')
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
@@ -586,13 +785,13 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
           <p className="subtitulo">Sistema de evaluación basado en el Manual de Competencias</p>
           
           <div className="input-group">
-            <label htmlFor="nombre-asesor">Nombre del Asesor</label>
+            <label htmlFor="nombre-asesor">Nombre del Evaluado</label>
             <input
               id="nombre-asesor"
               type="text"
               value={nombreAsesor}
               onChange={(e) => setNombreAsesor(e.target.value)}
-              placeholder="Ingresa el nombre completo del asesor"
+              placeholder="Ingresa el nombre completo"
               onKeyPress={(e) => e.key === 'Enter' && handleIniciar()}
             />
           </div>
@@ -609,18 +808,88 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
     )
   }
 
+  if (paso === 'tipo_evaluacion') {
+    return (
+      <div className="evaluacion-container">
+        <div className="evaluacion-card">
+          <div className="header-evaluacion">
+            <h1>Tipo de Evaluación</h1>
+            <p className="nombre-asesor">Evaluado: <strong>{nombreAsesor}</strong></p>
+          </div>
+
+          <p className="pregunta-mate">¿El MATE está dirigido a un Asesor o a un Líder?</p>
+          
+          <div className="opciones-tipo-evaluacion">
+            <div className="opcion-tipo-evaluacion">
+              <h3>Asesor</h3>
+              <p className="descripcion-tipo">
+                Evaluación para asesores. Incluye todas las competencias excepto:
+                <ul>
+                  <li>Colaboración Remota (Trabajo en Equipo)</li>
+                  <li>Mindset Digital (Innovación)</li>
+                  <li>Liderazgo Konecta</li>
+                  <li>Prospectiva Estratégica (Visión Estratégica)</li>
+                </ul>
+              </p>
+              <button 
+                className="btn-primary"
+                onClick={() => handleSeleccionarTipo('asesor')}
+              >
+                Seleccionar Asesor
+              </button>
+            </div>
+            
+            <div className="opcion-tipo-evaluacion">
+              <h3>Líder</h3>
+              <p className="descripcion-tipo">
+                Evaluación para líderes. Incluye todas las competencias, incluyendo:
+                <ul>
+                  <li>Colaboración Remota (Trabajo en Equipo)</li>
+                  <li>Mindset Digital (Innovación)</li>
+                  <li>Liderazgo Konecta</li>
+                  <li>Prospectiva Estratégica (Visión Estratégica)</li>
+                </ul>
+              </p>
+              <button 
+                className="btn-primary"
+                onClick={() => handleSeleccionarTipo('lider')}
+              >
+                Seleccionar Líder
+              </button>
+            </div>
+          </div>
+
+          <div className="acciones">
+            <button 
+              className="btn-secondary"
+              onClick={() => setPaso('inicio')}
+            >
+              Volver
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   if (paso === 'mate_anterior') {
+    // Si no hay tipo de evaluación seleccionado, redirigir a selección de tipo
+    if (!tipoEvaluacion) {
+      setPaso('tipo_evaluacion')
+      return null
+    }
+
     return (
       <div className="evaluacion-container">
         <div className="evaluacion-card">
           <div className="header-evaluacion">
             <h1>MATE Anterior</h1>
-            <p className="nombre-asesor">Asesor: <strong>{nombreAsesor}</strong></p>
+            <p className="nombre-asesor">{tipoEvaluacion === 'asesor' ? 'Asesor' : 'Líder'}: <strong>{nombreAsesor}</strong></p>
           </div>
 
           {tieneMATEAnterior === null ? (
             <>
-              <p className="pregunta-mate">¿El asesor ya tuvo un MATE anteriormente?</p>
+              <p className="pregunta-mate">¿El {tipoEvaluacion === 'asesor' ? 'asesor' : 'líder'} ya tuvo un MATE anteriormente?</p>
               <div className="opciones-mate">
                 <button 
                   className="btn-primary"
@@ -668,7 +937,7 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
                 <button 
                   className="btn-secondary"
                   onClick={() => {
-                    setPaso('inicio')
+                    setPaso('tipo_evaluacion')
                     setTieneMATEAnterior(null)
                     setArchivoMATE(null)
                     setDatosMATEAnterior(null)
@@ -697,7 +966,7 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
         <div className="evaluacion-card">
           <div className="header-evaluacion">
             <h1>Resumen del MATE Anterior</h1>
-            <p className="nombre-asesor">Asesor: <strong>{nombreAsesor}</strong></p>
+            <p className="nombre-asesor">{tipoEvaluacion === 'asesor' ? 'Asesor' : 'Líder'}: <strong>{nombreAsesor}</strong></p>
             {datosMATEAnterior.periodo && (
               <p className="mate-anterior-info">Período: {datosMATEAnterior.periodo}</p>
             )}
@@ -706,7 +975,7 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
           <div className="resumen-mate-container">
             <h3>Competencias Evaluadas en el MATE Anterior</h3>
             <div className="competencias-resumen">
-              {COMPETENCIAS.map(comp => {
+              {competenciasFiltradas.map(comp => {
                 const infoAnterior = datosMATEAnterior.competencias[comp.id]
                 if (!infoAnterior) return null
 
@@ -733,7 +1002,7 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
           <div className="acciones">
             <button 
               className="btn-secondary"
-              onClick={() => setPaso('mate_anterior')}
+              onClick={() => tipoEvaluacion ? setPaso('mate_anterior') : setPaso('tipo_evaluacion')}
             >
               Volver
             </button>
@@ -751,7 +1020,7 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
 
   if (paso === 'preguntas') {
     // Validar que todas las competencias estén evaluadas
-    const todasRespondidas = COMPETENCIAS.every(comp => {
+    const todasRespondidas = competenciasFiltradas.every(comp => {
       const infoAnterior = datosMATEAnterior?.competencias[comp.id]
       
       if (infoAnterior) {
@@ -762,11 +1031,19 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
         // Si mantiene, no necesita respuestas
         if (evol.estado === 'mantiene') return true
         
-        // Si mejora o empeora, necesita responder todas las preguntas
-        return comp.preguntas.every((_, idx) => {
+        // Si mejora o empeora, necesita responder todas las preguntas normales y de profundización
+        const preguntasNormalesCompletas = comp.preguntas.every((_, idx) => {
           const key = `${comp.id}_${idx}`
           return respuestas[key]?.trim() !== ''
         })
+        
+        const preguntasProfundizacion = PREGUNTAS_PROFUNDIZACION[evol.estado] || []
+        const preguntasProfundizacionCompletas = preguntasProfundizacion.every((_, idx) => {
+          const key = `${comp.id}_prof_${idx}`
+          return respuestas[key]?.trim() !== ''
+        })
+        
+        return preguntasNormalesCompletas && preguntasProfundizacionCompletas
       } else {
         // Si no hay MATE anterior, validar respuestas normales
         return comp.preguntas.every((_, idx) => {
@@ -781,14 +1058,14 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
         <div className="evaluacion-card">
           <div className="header-evaluacion">
             <h1>Evaluación de Competencias</h1>
-            <p className="nombre-asesor">Asesor: <strong>{nombreAsesor}</strong></p>
+            <p className="nombre-asesor">{tipoEvaluacion === 'asesor' ? 'Asesor' : 'Líder'}: <strong>{nombreAsesor}</strong></p>
             {datosMATEAnterior && (
               <p className="mate-anterior-info">Comparando con MATE anterior ({datosMATEAnterior.periodo || 'período anterior'})</p>
             )}
           </div>
 
           <div className="preguntas-container">
-            {COMPETENCIAS.map((competencia) => {
+            {competenciasFiltradas.map((competencia) => {
               const infoAnterior = datosMATEAnterior?.competencias[competencia.id]
               const evolucion = evoluciones[competencia.id]
               const mostrarPreguntas = !infoAnterior || (evolucion?.estado && evolucion.estado !== 'mantiene')
@@ -839,6 +1116,7 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
 
                   {mostrarPreguntas && (
                     <div className="preguntas-competencia">
+                      <h3 className="seccion-preguntas-titulo">Preguntas de Evaluación</h3>
                       {competencia.preguntas.map((pregunta, idx) => {
                         const key = `${competencia.id}_${idx}`
                         return (
@@ -860,6 +1138,36 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
                           </div>
                         )
                       })}
+                      
+                      {/* Preguntas de profundización para mejora/empeora */}
+                      {evolucion?.estado && (evolucion.estado === 'mejora' || evolucion.estado === 'empeora') && (
+                        <div className="preguntas-profundizacion">
+                          <h3 className="seccion-preguntas-titulo profundizacion-titulo">
+                            Preguntas de Profundización
+                            <span className="badge-profundizacion">
+                              {evolucion.estado === 'mejora' ? 'Mejora' : 'Empeora'}
+                            </span>
+                          </h3>
+                          <p className="descripcion-profundizacion">
+                            Estas preguntas ayudan a entender mejor los factores que influyeron en la evolución de esta competencia.
+                          </p>
+                          {(PREGUNTAS_PROFUNDIZACION[evolucion.estado] || []).map((pregunta, idx) => {
+                            const key = `${competencia.id}_prof_${idx}`
+                            return (
+                              <div key={key} className="pregunta-item pregunta-profundizacion">
+                                <label className="pregunta-label">{pregunta}</label>
+                                <textarea
+                                  className="respuesta-textarea"
+                                  value={respuestas[key] || ''}
+                                  onChange={(e) => handleCambiarRespuesta(key, e.target.value)}
+                                  placeholder="Escribe tu respuesta aquí..."
+                                  rows="4"
+                                />
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -867,10 +1175,25 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
             })}
           </div>
 
+          {/* Sección de métricas */}
+          <div className="metricas-section">
+            <h3 className="metricas-titulo">Métricas del {tipoEvaluacion === 'asesor' ? 'Asesor' : 'Líder'} (Opcional)</h3>
+            <p className="metricas-descripcion">
+              Ingresa métricas relevantes del {tipoEvaluacion === 'asesor' ? 'asesor' : 'líder'} (KPIs, resultados, indicadores de desempeño, etc.) para hacer comparaciones más completas en el análisis.
+            </p>
+            <textarea
+              className="metricas-textarea"
+              value={metricas}
+              onChange={(e) => setMetricas(e.target.value)}
+              placeholder="Ejemplo: NPS: 8.5, Tiempo promedio de resolución: 12 min, Satisfacción del cliente: 92%, Tasa de resolución en primer contacto: 85%, etc."
+              rows="5"
+            />
+          </div>
+
           <div className="acciones">
             <button 
               className="btn-secondary"
-              onClick={() => setPaso('mate_anterior')}
+              onClick={() => tipoEvaluacion ? setPaso('mate_anterior') : setPaso('tipo_evaluacion')}
             >
               Volver
             </button>
@@ -904,7 +1227,7 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
         <div className="evaluacion-card">
           <div className="header-evaluacion">
             <h1>Perfil de Competencias Generado</h1>
-            <p className="nombre-asesor">Asesor: <strong>{nombreAsesor}</strong></p>
+            <p className="nombre-asesor">{tipoEvaluacion === 'asesor' ? 'Asesor' : 'Líder'}: <strong>{nombreAsesor}</strong></p>
             {datosMATEAnterior && (
               <p className="mate-anterior-info">Comparado con MATE anterior ({datosMATEAnterior.periodo || 'período anterior'})</p>
             )}
@@ -968,15 +1291,30 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
                         return resultado.length > 0 ? resultado : textoLimpio
                       }
                       
-                      // Detectar títulos principales (números seguidos de punto o texto en mayúsculas corto)
-                      if (/^\d+\.\s+[A-ZÁÉÍÓÚÑ]/.test(trimmedLine) || 
+                      // Detectar títulos principales (## o números seguidos de punto)
+                      if (/^##\s+/.test(trimmedLine) || /^\d+\.\s+[A-ZÁÉÍÓÚÑ]/.test(trimmedLine) || 
                           (trimmedLine.length < 80 && trimmedLine === trimmedLine.toUpperCase() && trimmedLine.length > 5 && !trimmedLine.includes(':'))) {
-                        return <h3 key={i} className="perfil-titulo">{formatearTexto(trimmedLine, i)}</h3>
+                        const tituloLimpio = trimmedLine.replace(/^##\s+/, '').replace(/^\d+\.\s+/, '')
+                        return <h2 key={i} className="perfil-titulo-principal">{formatearTexto(tituloLimpio, i)}</h2>
                       }
                       
-                      // Detectar subtítulos (texto que termina en : o que es corto y tiene formato especial)
-                      if (trimmedLine.endsWith(':') && trimmedLine.length < 60 && !trimmedLine.startsWith('-') && !trimmedLine.startsWith('•')) {
-                        return <h4 key={i} className="perfil-subtitulo">{formatearTexto(trimmedLine, i)}</h4>
+                      // Detectar subtítulos (### o texto que termina en :)
+                      if (/^###\s+/.test(trimmedLine) || (trimmedLine.endsWith(':') && trimmedLine.length < 70 && !trimmedLine.startsWith('-') && !trimmedLine.startsWith('•'))) {
+                        const subtituloLimpio = trimmedLine.replace(/^###\s+/, '')
+                        return <h3 key={i} className="perfil-subtitulo">{formatearTexto(subtituloLimpio, i)}</h3>
+                      }
+                      
+                      // Detectar niveles de competencia destacados
+                      if (/Nivel:\s*(Excelente Desarrollo|Desarrollado|Necesita Desarrollo)/i.test(trimmedLine)) {
+                        let nivelClass = 'nivel-competencia'
+                        if (/Excelente Desarrollo/i.test(trimmedLine)) {
+                          nivelClass += ' nivel-excelente'
+                        } else if (/Desarrollado/i.test(trimmedLine)) {
+                          nivelClass += ' nivel-desarrollado'
+                        } else {
+                          nivelClass += ' nivel-necesita'
+                        }
+                        return <p key={i} className={nivelClass}><strong>{formatearTexto(trimmedLine, i)}</strong></p>
                       }
                       
                       // Detectar listas (pero no líneas que solo son guiones)
