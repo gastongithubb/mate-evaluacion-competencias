@@ -191,6 +191,7 @@ function EvaluacionCompetencias() {
   const [error, setError] = useState(null)
   const [listoParaGuardar, setListoParaGuardar] = useState(false)
   const [metricas, setMetricas] = useState('') // Métricas del asesor para comparaciones
+  const [mostrarModalReiniciar, setMostrarModalReiniciar] = useState(false)
   const fileInputRef = useRef(null)
 
   // Filtrar competencias según el tipo de evaluación
@@ -636,6 +637,15 @@ function EvaluacionCompetencias() {
           const competencia = COMPETENCIAS.find(c => c.id === id)
           if (competencia) {
             contextoMATEAnterior += `\n${competencia.nombre} - Nivel ${info.nivel}:\n`
+            if (info.categoria) {
+              const categoriaTexto = {
+                'mantener': 'Mantener',
+                'alentar': 'Alentar',
+                'transformar': 'Transformar',
+                'evitar': 'Evitar'
+              }[info.categoria] || info.categoria
+              contextoMATEAnterior += `Categoría en MATE anterior: ${categoriaTexto}\n`
+            }
             if (info.descripcion) contextoMATEAnterior += `Descripción: ${info.descripcion}\n`
             if (info.observaciones) contextoMATEAnterior += `Observaciones: ${info.observaciones}\n`
           }
@@ -651,6 +661,15 @@ function EvaluacionCompetencias() {
         // Si hay MATE anterior, incluir información de evolución
         if (infoAnterior && evolucion) {
           competenciaTexto += `\nEstado en MATE anterior: Nivel ${infoAnterior.nivel}`
+          if (infoAnterior.categoria) {
+            const categoriaTexto = {
+              'mantener': 'Mantener',
+              'alentar': 'Alentar',
+              'transformar': 'Transformar',
+              'evitar': 'Evitar'
+            }[infoAnterior.categoria] || infoAnterior.categoria
+            competenciaTexto += `\nCategoría en MATE anterior: ${categoriaTexto}`
+          }
           if (infoAnterior.observaciones) {
             competenciaTexto += `\nObservaciones anteriores: ${infoAnterior.observaciones}`
           }
@@ -777,10 +796,99 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
     limpiarLocalStorage()
   }
 
+  const handleReiniciarMATE = () => {
+    setMostrarModalReiniciar(true)
+  }
+
+  const confirmarReiniciarMATE = () => {
+    setNombreAsesor('')
+    setTipoEvaluacion(null)
+    setTieneMATEAnterior(null)
+    setArchivoMATE(null)
+    setDatosMATEAnterior(null)
+    setPaso('inicio')
+    setRespuestas({})
+    setEvoluciones({})
+    setPerfilGenerado(null)
+    setError(null)
+    setMetricas('')
+    setCargando(false)
+    setProcesandoPDF(false)
+    setListoParaGuardar(false)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+    // Limpiar todo el localStorage
+    localStorage.clear()
+    setMostrarModalReiniciar(false)
+  }
+
+  const cancelarReiniciarMATE = () => {
+    setMostrarModalReiniciar(false)
+  }
+
+  // Componente para el botón de reiniciar (visible en todas las vistas excepto inicio)
+  const BotonReiniciar = () => {
+    if (paso === 'inicio') return null
+    return (
+      <button 
+        className="btn-reiniciar-mate"
+        onClick={handleReiniciarMATE}
+        title="Reiniciar MATE - Borrar todos los datos"
+      >
+        <span className="btn-reiniciar-icon">🔄</span>
+        <span className="btn-reiniciar-text">Reiniciar MATE</span>
+      </button>
+    )
+  }
+
+  // Componente para el modal de confirmación
+  const ModalReiniciar = () => {
+    if (!mostrarModalReiniciar) return null
+    
+    return (
+      <div className="modal-overlay" onClick={cancelarReiniciarMATE}>
+        <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-header">
+            <div className="modal-icon-warning">⚠️</div>
+            <h2 className="modal-title">¿Reiniciar MATE?</h2>
+          </div>
+          <div className="modal-body">
+            <p>Esta acción eliminará todos los datos guardados, incluyendo:</p>
+            <ul className="modal-list">
+              <li>Información del evaluado</li>
+              <li>Respuestas a las preguntas</li>
+              <li>Datos del MATE anterior</li>
+              <li>Progreso de la evaluación</li>
+            </ul>
+            <p className="modal-warning">Esta acción no se puede deshacer.</p>
+          </div>
+          <div className="modal-actions">
+            <button 
+              className="btn-modal-cancelar"
+              onClick={cancelarReiniciarMATE}
+            >
+              Cancelar
+            </button>
+            <button 
+              className="btn-modal-confirmar"
+              onClick={confirmarReiniciarMATE}
+            >
+              Sí, reiniciar
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   if (paso === 'inicio') {
     return (
-      <div className="evaluacion-container">
-        <div className="evaluacion-card">
+      <>
+        <ModalReiniciar />
+        <div className="evaluacion-container">
+          <BotonReiniciar />
+          <div className="evaluacion-card">
           <h1>Evaluación de Competencias</h1>
           <p className="subtitulo">Sistema de evaluación basado en el Manual de Competencias</p>
           
@@ -805,12 +913,16 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
           </button>
         </div>
       </div>
+      </>
     )
   }
 
   if (paso === 'tipo_evaluacion') {
     return (
-      <div className="evaluacion-container">
+      <>
+        <ModalReiniciar />
+        <div className="evaluacion-container">
+          <BotonReiniciar />
         <div className="evaluacion-card">
           <div className="header-evaluacion">
             <h1>Tipo de Evaluación</h1>
@@ -869,6 +981,7 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
           </div>
         </div>
       </div>
+      </>
     )
   }
 
@@ -878,12 +991,15 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
       setPaso('tipo_evaluacion')
       return null
     }
-
+    
     return (
-      <div className="evaluacion-container">
-        <div className="evaluacion-card">
-          <div className="header-evaluacion">
-            <h1>MATE Anterior</h1>
+      <>
+        <ModalReiniciar />
+        <div className="evaluacion-container">
+          <BotonReiniciar />
+          <div className="evaluacion-card">
+            <div className="header-evaluacion">
+              <h1>MATE Anterior</h1>
             <p className="nombre-asesor">{tipoEvaluacion === 'asesor' ? 'Asesor' : 'Líder'}: <strong>{nombreAsesor}</strong></p>
           </div>
 
@@ -957,12 +1073,16 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
           ) : null}
         </div>
       </div>
+      </>
     )
   }
 
   if (paso === 'resumen_mate') {
     return (
-      <div className="evaluacion-container">
+      <>
+        <ModalReiniciar />
+        <div className="evaluacion-container">
+          <BotonReiniciar />
         <div className="evaluacion-card">
           <div className="header-evaluacion">
             <h1>Resumen del MATE Anterior</h1>
@@ -983,7 +1103,17 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
                   <div key={comp.id} className="competencia-resumen-item">
                     <div className="competencia-resumen-header">
                       <h4>{comp.nombre}</h4>
-                      <span className={`nivel-badge nivel-${infoAnterior.nivel}`}>Nivel {infoAnterior.nivel}</span>
+                      <div className="badges-resumen">
+                        <span className={`nivel-badge nivel-${infoAnterior.nivel}`}>Nivel {infoAnterior.nivel}</span>
+                        {infoAnterior.categoria && (
+                          <span className={`categoria-badge categoria-${infoAnterior.categoria}`}>
+                            {infoAnterior.categoria === 'mantener' ? 'Mantener' :
+                             infoAnterior.categoria === 'alentar' ? 'Alentar' :
+                             infoAnterior.categoria === 'transformar' ? 'Transformar' :
+                             infoAnterior.categoria === 'evitar' ? 'Evitar' : infoAnterior.categoria}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     {infoAnterior.descripcion && (
                       <p className="descripcion-resumen">{infoAnterior.descripcion.substring(0, 200)}...</p>
@@ -1015,6 +1145,7 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
           </div>
         </div>
       </div>
+      </>
     )
   }
 
@@ -1054,10 +1185,13 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
     })
     
     return (
-      <div className="evaluacion-container">
-        <div className="evaluacion-card">
-          <div className="header-evaluacion">
-            <h1>Evaluación de Competencias</h1>
+      <>
+        <ModalReiniciar />
+        <div className="evaluacion-container">
+          <BotonReiniciar />
+          <div className="evaluacion-card">
+            <div className="header-evaluacion">
+              <h1>Evaluación de Competencias</h1>
             <p className="nombre-asesor">{tipoEvaluacion === 'asesor' ? 'Asesor' : 'Líder'}: <strong>{nombreAsesor}</strong></p>
             {datosMATEAnterior && (
               <p className="mate-anterior-info">Comparando con MATE anterior ({datosMATEAnterior.periodo || 'período anterior'})</p>
@@ -1076,9 +1210,19 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
                     <div className="competencia-header-left">
                       <h2 className="competencia-titulo">{competencia.nombre}</h2>
                       {infoAnterior && (
-                        <span className={`nivel-badge nivel-${infoAnterior.nivel}`}>
-                          MATE Anterior: Nivel {infoAnterior.nivel}
-                        </span>
+                        <div className="badges-competencias">
+                          <span className={`nivel-badge nivel-${infoAnterior.nivel}`}>
+                            MATE Anterior: Nivel {infoAnterior.nivel}
+                          </span>
+                          {infoAnterior.categoria && (
+                            <span className={`categoria-badge categoria-${infoAnterior.categoria}`}>
+                              {infoAnterior.categoria === 'mantener' ? 'Mantener' :
+                               infoAnterior.categoria === 'alentar' ? 'Alentar' :
+                               infoAnterior.categoria === 'transformar' ? 'Transformar' :
+                               infoAnterior.categoria === 'evitar' ? 'Evitar' : infoAnterior.categoria}
+                            </span>
+                          )}
+                        </div>
                       )}
                     </div>
                     <span className="competencia-categoria">{competencia.categoria}</span>
@@ -1218,12 +1362,16 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
           )}
         </div>
       </div>
+      </>
     )
   }
 
   if (paso === 'resultado') {
     return (
-      <div className="evaluacion-container">
+      <>
+        <ModalReiniciar />
+        <div className="evaluacion-container">
+          <BotonReiniciar />
         <div className="evaluacion-card">
           <div className="header-evaluacion">
             <h1>Perfil de Competencias Generado</h1>
@@ -1352,10 +1500,15 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
           </div>
         </div>
       </div>
+      </>
     )
   }
 
-  return null
+  return (
+    <>
+      <ModalReiniciar />
+    </>
+  )
 }
 
 export default EvaluacionCompetencias

@@ -67,7 +67,7 @@ export async function procesarPDFMATE(file) {
   })
 }
 
-function extraerDatosMATE(texto) {
+export function extraerDatosMATE(texto) {
   const datos = {
     nombreAsesor: '',
     periodo: '',
@@ -85,6 +85,142 @@ function extraerDatosMATE(texto) {
   if (periodoMatch) {
     datos.periodo = periodoMatch[1].trim()
   }
+  
+  // Buscar secciones de categorías en el PDF (MANTENER, ALENTAR, TRANSFORMAR, EVITAR)
+  // Estas secciones aparecen como títulos y luego listan competencias debajo
+  const seccionesCategorias = {
+    mantener: [],
+    alentar: [],
+    transformar: [],
+    evitar: []
+  }
+  
+  // Normalizar espacios múltiples a espacios simples para facilitar la búsqueda
+  const textoNormalizado = texto.replace(/\s+/g, ' ')
+  
+  // Buscar secciones con títulos como "MANTENER", "ALENTAR", etc.
+  // Buscar patrones más flexibles que incluyan "FORTALEZA: MANTENER", "MANTENER:", etc.
+  // El PDF puede tener formato: "FORTALEZA: MANTENER" o simplemente "MANTENER"
+  // También buscar variaciones como "FORTALEZA MANTENER" (sin dos puntos)
+  // Buscar tanto con "FORTALEZA:" como sin él
+  const patronesSeccion = [
+    /FORTALEZA\s*:\s*(MANTENER|ALENTAR|TRANSFORMAR|EVITAR)/gi,
+    /(?:^|\n|\.)\s*(MANTENER|ALENTAR|TRANSFORMAR|EVITAR)\s*(?:[:•\-]|$|\n|\.|¿|\?)/gmi
+  ]
+  
+  let matchSeccion
+  const posicionesSecciones = []
+  
+  // Buscar con ambos patrones
+  patronesSeccion.forEach(patron => {
+    while ((matchSeccion = patron.exec(textoNormalizado)) !== null) {
+      const categoriaNombre = matchSeccion[1].toLowerCase()
+      const inicioSeccion = matchSeccion.index + matchSeccion[0].length
+      
+      // Verificar que no sea una duplicada (misma posición aproximada)
+      const yaExiste = posicionesSecciones.some(pos => 
+        Math.abs(pos.inicio - inicioSeccion) < 50
+      )
+      
+      if (!yaExiste) {
+        posicionesSecciones.push({
+          categoria: categoriaNombre,
+          inicio: inicioSeccion,
+          fin: null
+        })
+      }
+    }
+  })
+  
+  // Ordenar por posición
+  posicionesSecciones.sort((a, b) => a.inicio - b.inicio)
+  
+  // Determinar el fin de cada sección (inicio de la siguiente sección de categoría o fin del texto)
+  for (let i = 0; i < posicionesSecciones.length; i++) {
+    if (i < posicionesSecciones.length - 1) {
+      posicionesSecciones[i].fin = posicionesSecciones[i + 1].inicio
+    } else {
+      // Para la última sección, buscar hasta encontrar otra sección conocida o fin del documento
+      const siguienteSeccion = texto.indexOf('\n', posicionesSecciones[i].inicio + 5000)
+      posicionesSecciones[i].fin = siguienteSeccion !== -1 ? siguienteSeccion : texto.length
+    }
+  }
+  
+  // Para cada sección, buscar competencias que aparecen en ella
+  // Buscar competencias que aparecen después del título de la sección y antes de la siguiente
+  posicionesSecciones.forEach(seccion => {
+    // Usar texto normalizado para buscar competencias
+    const contenidoSeccion = textoNormalizado.substring(seccion.inicio, Math.min(seccion.inicio + 10000, seccion.fin))
+    
+    // Buscar competencias en esta sección buscando el patrón "COMPETENCIA - Nivel X:"
+    // que aparezca después del título de la sección
+    const patronCompetenciaEnSeccion = /([A-ZÁÉÍÓÚÑ\s]+(?:\([^\)]+\))?)\s*-\s*Nivel\s+\d+:/gi
+    let matchComp
+    
+    while ((matchComp = patronCompetenciaEnSeccion.exec(contenidoSeccion)) !== null) {
+      const nombreCompetenciaEncontrada = matchComp[1].trim().toUpperCase()
+      let idCompetenciaEncontrada = null
+      
+      // Limpiar el nombre de espacios extra
+      const nombreLimpio = nombreCompetenciaEncontrada.replace(/\s+/g, ' ').trim()
+      
+      // Mapear el nombre encontrado a un ID
+      for (const [nombrePDF, id] of Object.entries(MAPEO_COMPETENCIAS)) {
+        const nombrePDFUpper = nombrePDF.toUpperCase()
+        const nombreLimpioUpper = nombreLimpio.toUpperCase()
+        
+        // Comparación más flexible
+        if (nombreLimpioUpper === nombrePDFUpper || 
+            nombreLimpioUpper.includes(nombrePDFUpper) || 
+            nombrePDFUpper.includes(nombreLimpioUpper) ||
+            // También buscar sin espacios
+            nombreLimpioUpper.replace(/\s/g, '') === nombrePDFUpper.replace(/\s/g, '')) {
+          idCompetenciaEncontrada = id
+          break
+        }
+      }
+      
+      // Si no se encontró por mapeo exacto, buscar por palabras clave
+      if (!idCompetenciaEncontrada) {
+        const nombreUpper = nombreLimpio.toUpperCase()
+        
+        if (nombreUpper.includes('MENTALIDAD') && (nombreUpper.includes('ÁGIL') || nombreUpper.includes('AGIL'))) {
+          idCompetenciaEncontrada = 'mentalidad_agil'
+        } else if (nombreUpper.includes('FOCO') && nombreUpper.includes('DATA')) {
+          idCompetenciaEncontrada = 'foco_data'
+        } else if (nombreUpper.includes('COMUNICACIÓN') || nombreUpper.includes('COMUNICACION')) {
+          if (nombreUpper.includes('DIGITAL')) {
+            idCompetenciaEncontrada = 'comunicacion_digital'
+          }
+        } else if (nombreUpper.includes('LEARNING') && nombreUpper.includes('AGILITY')) {
+          idCompetenciaEncontrada = 'learning_agility'
+        } else if (nombreUpper.includes('COLABORACIÓN') || nombreUpper.includes('COLABORACION') || nombreUpper.includes('REMOTA')) {
+          idCompetenciaEncontrada = 'colaboracion_remota'
+        } else if (nombreUpper.includes('MINDSET') && nombreUpper.includes('DIGITAL')) {
+          idCompetenciaEncontrada = 'mindset_digital'
+        } else if (nombreUpper.includes('LIDERAZGO')) {
+          idCompetenciaEncontrada = 'liderazgo_konecta'
+        } else if (nombreUpper.includes('ENGAGEMENT')) {
+          idCompetenciaEncontrada = 'engagement'
+        } else if (nombreUpper.includes('CONFIANZA')) {
+          idCompetenciaEncontrada = 'confianza'
+        } else if (nombreUpper === 'CX' || nombreUpper.includes('EXPERIENCIA') || nombreUpper.includes('CLIENTE')) {
+          idCompetenciaEncontrada = 'experiencia_cliente'
+        } else if (nombreUpper.includes('RESULTADOS') || nombreUpper.includes('RESUL')) {
+          idCompetenciaEncontrada = 'orientacion_resultados'
+        } else if (nombreUpper.includes('MERCADO') || nombreUpper.includes('COMERCIAL')) {
+          idCompetenciaEncontrada = 'orientacion_comercial'
+        } else if (nombreUpper.includes('PROSPECTIVA') || nombreUpper.includes('ESTRATÉGICA') || nombreUpper.includes('ESTRATEGICA')) {
+          idCompetenciaEncontrada = 'prospectiva_estrategica'
+        }
+      }
+      
+      // Si encontramos el ID, agregarlo a la sección
+      if (idCompetenciaEncontrada && !seccionesCategorias[seccion.categoria].includes(idCompetenciaEncontrada)) {
+        seccionesCategorias[seccion.categoria].push(idCompetenciaEncontrada)
+      }
+    }
+  })
   
   // Extraer competencias con niveles y observaciones
   // El formato es: COMPETENCIA - Nivel X: descripción Observaciones: observaciones
@@ -121,11 +257,87 @@ function extraerDatosMATE(texto) {
       descripcion = textoSeccion.trim()
     }
     
+    // Detectar categoría: Mantener, Alentar, Transformar, Evitar
+    // La categoría se determina por la sección del PDF donde aparece la competencia
+    let categoria = null
+    let idCompetenciaTemp = null
+    
+    // Intentar mapear esta competencia a un ID
+    for (const [nombrePDF, id] of Object.entries(MAPEO_COMPETENCIAS)) {
+      const nombrePDFUpper = nombrePDF.toUpperCase()
+      const nombreCompUpper = nombreCompetencia.toUpperCase()
+      if (nombreCompUpper === nombrePDFUpper || 
+          nombreCompUpper.includes(nombrePDFUpper) || 
+          nombrePDFUpper.includes(nombreCompUpper)) {
+        idCompetenciaTemp = id
+        break
+      }
+    }
+    
+    // Si no se encontró por mapeo exacto, buscar por palabras clave
+    if (!idCompetenciaTemp) {
+      const nombreUpper = nombreCompetencia.toUpperCase()
+      
+      if (nombreUpper.includes('MENTALIDAD') && nombreUpper.includes('ÁGIL')) {
+        idCompetenciaTemp = 'mentalidad_agil'
+      } else if (nombreUpper.includes('FOCO') && nombreUpper.includes('DATA')) {
+        idCompetenciaTemp = 'foco_data'
+      } else if (nombreUpper.includes('COMUNICACIÓN') && nombreUpper.includes('DIGITAL')) {
+        idCompetenciaTemp = 'comunicacion_digital'
+      } else if (nombreUpper.includes('LEARNING') && nombreUpper.includes('AGILITY')) {
+        idCompetenciaTemp = 'learning_agility'
+      } else if (nombreUpper.includes('COLABORACIÓN') || nombreUpper.includes('REMOTA')) {
+        idCompetenciaTemp = 'colaboracion_remota'
+      } else if (nombreUpper.includes('MINDSET') && nombreUpper.includes('DIGITAL')) {
+        idCompetenciaTemp = 'mindset_digital'
+      } else if (nombreUpper.includes('LIDERAZGO')) {
+        idCompetenciaTemp = 'liderazgo_konecta'
+      } else if (nombreUpper === 'ENGAGEMENT' || nombreUpper.includes('ENGAGEMENT')) {
+        idCompetenciaTemp = 'engagement'
+      } else if (nombreUpper === 'CONFIANZA' || nombreUpper.includes('CONFIANZA')) {
+        idCompetenciaTemp = 'confianza'
+      } else if (nombreUpper === 'CX' || nombreUpper.includes('EXPERIENCIA') || nombreUpper.includes('CLIENTE')) {
+        idCompetenciaTemp = 'experiencia_cliente'
+      } else if (nombreUpper.includes('RESULTADOS') || nombreUpper.includes('RESUL')) {
+        idCompetenciaTemp = 'orientacion_resultados'
+      } else if (nombreUpper === 'MERCADO' || nombreUpper.includes('COMERCIAL')) {
+        idCompetenciaTemp = 'orientacion_comercial'
+      } else if (nombreUpper.includes('PROSPECTIVA') || nombreUpper.includes('ESTRATÉGICA')) {
+        idCompetenciaTemp = 'prospectiva_estrategica'
+      }
+    }
+    
+    // Si encontramos el ID, buscar en qué sección está
+    if (idCompetenciaTemp) {
+      for (const [cat, ids] of Object.entries(seccionesCategorias)) {
+        if (ids.includes(idCompetenciaTemp)) {
+          categoria = cat
+          break
+        }
+      }
+    }
+    
+    // Si aún no se encontró, buscar en el contexto cercano de la competencia
+    // para ver si hay una sección de categoría cerca
+    if (!categoria) {
+      // Buscar hacia atrás desde la competencia para encontrar la sección más cercana
+      const textoAntes = texto.substring(Math.max(0, inicio - 2000), inicio)
+      const patronSeccionCercana = /(?:^|\n)\s*(MANTENER|ALENTAR|TRANSFORMAR|EVITAR)\s*(?:[:•\-]|$|\n|\.)/gmi
+      const matches = [...textoAntes.matchAll(patronSeccionCercana)]
+      
+      if (matches.length > 0) {
+        // Tomar la sección más cercana (última encontrada antes de la competencia)
+        const seccionCercana = matches[matches.length - 1][1].toLowerCase()
+        categoria = seccionCercana
+      }
+    }
+    
     competenciasEncontradas.push({
       nombre: nombreCompetencia,
       nivel,
       descripcion,
-      observaciones
+      observaciones,
+      categoria
     })
   }
   
@@ -184,7 +396,8 @@ function extraerDatosMATE(texto) {
       datos.competencias[idCompetencia] = {
         nivel: comp.nivel,
         descripcion: comp.descripcion,
-        observaciones: comp.observaciones
+        observaciones: comp.observaciones,
+        categoria: comp.categoria // Mantener, Alentar, Transformar, Evitar
       }
     } else {
       // Log para debug si no se encuentra mapeo
