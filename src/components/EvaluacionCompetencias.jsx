@@ -176,7 +176,7 @@ const COMPETENCIAS = [
   }
 ]
 
-function EvaluacionCompetencias() {
+function EvaluacionCompetencias({ user, onLogout, onReiniciarMATE }) {
   const [nombreAsesor, setNombreAsesor] = useState('')
   const [tipoEvaluacion, setTipoEvaluacion] = useState(null) // 'asesor' o 'lider'
   const [tieneMATEAnterior, setTieneMATEAnterior] = useState(null)
@@ -190,7 +190,11 @@ function EvaluacionCompetencias() {
   const [cargando, setCargando] = useState(false)
   const [error, setError] = useState(null)
   const [listoParaGuardar, setListoParaGuardar] = useState(false)
-  const [metricas, setMetricas] = useState('') // Métricas del asesor para comparaciones
+  const [metricas, setMetricas] = useState({
+    kpis: [], // Array de KPIs: [{ nombrePDF, nombre, valor, comentarios }]
+    comentarios: '', // Comentarios generales
+    pasa: '' // Pasa
+  })
   const [mostrarModalReiniciar, setMostrarModalReiniciar] = useState(false)
   const fileInputRef = useRef(null)
 
@@ -212,7 +216,24 @@ function EvaluacionCompetencias() {
         setPaso(datos.paso || 'inicio')
         setRespuestas(datos.respuestas || {})
         setEvoluciones(datos.evoluciones || {})
-        setMetricas(datos.metricas || '')
+        // Manejar migración de formato antiguo (string) a nuevo (objeto)
+        if (datos.metricas) {
+          if (typeof datos.metricas === 'string') {
+            // Formato antiguo: convertir a nuevo formato
+            setMetricas({ kpis: [], comentarios: datos.metricas, pasa: '' })
+          } else if (typeof datos.metricas === 'object') {
+            // Asegurarse de que tenga la estructura correcta
+            setMetricas({
+              kpis: Array.isArray(datos.metricas.kpis) ? datos.metricas.kpis : [],
+              comentarios: datos.metricas.comentarios || '',
+              pasa: datos.metricas.pasa || ''
+            })
+          } else {
+            setMetricas({ kpis: [], comentarios: '', pasa: '' })
+          }
+        } else {
+          setMetricas({ kpis: [], comentarios: '', pasa: '' })
+        }
       }
       // Marcar como listo para guardar después de cargar (o si no hay datos)
       setListoParaGuardar(true)
@@ -516,6 +537,16 @@ function EvaluacionCompetencias() {
     try {
       const datos = await procesarPDFMATE(file)
       setDatosMATEAnterior(datos)
+      
+      // Si se extrajeron métricas del PDF, llenar automáticamente el campo de métricas
+      if (datos.metricas) {
+        setMetricas({
+          kpis: datos.metricas.kpis || [],
+          comentarios: datos.metricas.comentarios || '',
+          pasa: datos.metricas.pasa || ''
+        })
+      }
+      
       setProcesandoPDF(false)
     } catch (err) {
       setError(err.message || 'Error al procesar el PDF')
@@ -599,14 +630,13 @@ function EvaluacionCompetencias() {
           })
           setRespuestas(nuevasRespuestas)
         } else if (value === 'mejora' || value === 'empeora') {
-          // Inicializar respuestas vacías para esta competencia (preguntas normales y de profundización)
+          // Limpiar respuestas de preguntas normales y solo inicializar preguntas de profundización
           const nuevasRespuestas = { ...respuestas }
+          // Limpiar preguntas de evaluación normales
           competenciasFiltradas.find(c => c.id === competenciaId)?.preguntas.forEach((_, idx) => {
-            if (!nuevasRespuestas[`${competenciaId}_${idx}`]) {
-              nuevasRespuestas[`${competenciaId}_${idx}`] = ''
-            }
+            delete nuevasRespuestas[`${competenciaId}_${idx}`]
           })
-          // Inicializar preguntas de profundización
+          // Inicializar solo preguntas de profundización
           const preguntasProfundizacion = PREGUNTAS_PROFUNDIZACION[value] || []
           preguntasProfundizacion.forEach((_, idx) => {
             if (!nuevasRespuestas[`${competenciaId}_prof_${idx}`]) {
@@ -679,19 +709,7 @@ function EvaluacionCompetencias() {
           if (evolucion.estado === 'mantiene') {
             competenciaTexto += `\nEvaluación: Mantiene el mismo nivel del MATE anterior. No se requieren preguntas adicionales.`
           } else {
-            // Si mejora o empeora, incluir todas las respuestas (normales y de profundización)
-            const respuestasComp = comp.preguntas.map((pregunta, idx) => {
-              const key = `${comp.id}_${idx}`
-              const respuesta = respuestas[key]
-              if (!respuesta) return null
-              return `P: ${pregunta}\nR: ${respuesta}`
-            }).filter(Boolean).join('\n\n')
-            
-            if (respuestasComp) {
-              competenciaTexto += `\n\n${respuestasComp}`
-            }
-            
-            // Agregar preguntas de profundización
+            // Si mejora o empeora, solo incluir preguntas de profundización (no las de evaluación)
             const preguntasProfundizacion = PREGUNTAS_PROFUNDIZACION[evolucion.estado] || []
             const respuestasProfundizacion = preguntasProfundizacion.map((pregunta, idx) => {
               const key = `${comp.id}_prof_${idx}`
@@ -726,9 +744,39 @@ function EvaluacionCompetencias() {
 
       // Construir sección de métricas si están disponibles
       let seccionMetricas = ''
-      if (metricas && metricas.trim()) {
+      if (metricas && (Array.isArray(metricas.kpis) && metricas.kpis.length > 0 || metricas.comentarios || metricas.pasa)) {
         const tipoPersona = tipoEvaluacion === 'asesor' ? 'ASESOR' : 'LÍDER'
-        seccionMetricas = `\n\nMÉTRICAS DEL ${tipoPersona}:\n${metricas}\n\nUtiliza estas métricas para hacer comparaciones más completas y contextualizar el análisis de competencias.`
+        let textoMetricas = `\n\nMÉTRICAS DEL ${tipoPersona}:\n`
+        
+        // Agregar KPIs
+        if (Array.isArray(metricas.kpis) && metricas.kpis.length > 0) {
+          textoMetricas += '\nKPIs:\n'
+          metricas.kpis.forEach(kpi => {
+            if (kpi.nombre) {
+              textoMetricas += `- ${kpi.nombre}`
+              if (kpi.mes) {
+                textoMetricas += ` (${kpi.mes})`
+              }
+              if (kpi.pasa) {
+                textoMetricas += ` - Pasa: ${kpi.pasa}`
+              }
+              textoMetricas += '\n'
+            }
+          })
+        }
+        
+        // Agregar comentarios generales
+        if (metricas.comentarios) {
+          textoMetricas += `\nComentarios: ${metricas.comentarios}\n`
+        }
+        
+        // Agregar Pasa
+        if (metricas.pasa) {
+          textoMetricas += `\nPasa: ${metricas.pasa}\n`
+        }
+        
+        textoMetricas += '\nUtiliza estas métricas para hacer comparaciones más completas y contextualizar el análisis de competencias.'
+        seccionMetricas = textoMetricas
       }
 
       const tipoPersona = tipoEvaluacion === 'asesor' ? 'asesor' : 'líder'
@@ -749,7 +797,7 @@ ${datosMATEAnterior ? 'EVALUACIÓN ACTUAL (comparando con MATE anterior):' : 'EV
 ${respuestasTexto}
 
 Por favor, genera un perfil detallado y profesional que incluya:
-1. Resumen ejecutivo del perfil del asesor${datosMATEAnterior ? ' comparando con el MATE anterior' : ''}${metricas ? ', incorporando las métricas proporcionadas' : ''}
+1. Resumen ejecutivo del perfil del asesor${datosMATEAnterior ? ' comparando con el MATE anterior' : ''}${(Array.isArray(metricas?.kpis) && metricas.kpis.length > 0 || metricas?.comentarios || metricas?.pasa) ? ', incorporando las métricas proporcionadas' : ''}
 2. Evaluación detallada por cada competencia evaluada, indicando claramente el nivel de desarrollo (Excelente Desarrollo, Desarrollado, o Necesita Desarrollo)${datosMATEAnterior ? ' y la evolución respecto al MATE anterior' : ''}. Para cada competencia, muestra el nivel de forma visible y destacada.
 3. Fortalezas identificadas agrupadas por categoría, destacando las aptitudes más desarrolladas
 4. Áreas de oportunidad con recomendaciones específicas${datosMATEAnterior ? ', destacando mejoras o retrocesos respecto al MATE anterior' : ''}
@@ -789,7 +837,7 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
     setEvoluciones({})
     setPerfilGenerado(null)
     setError(null)
-    setMetricas('')
+    setMetricas({ kpis: [], comentarios: '', pasa: '' })
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
@@ -799,6 +847,19 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
   const handleReiniciarMATE = () => {
     setMostrarModalReiniciar(true)
   }
+
+  // Exponer la función de reinicio al componente padre a través del ref
+  useEffect(() => {
+    if (onReiniciarMATE && typeof onReiniciarMATE === 'object' && 'current' in onReiniciarMATE) {
+      onReiniciarMATE.current = handleReiniciarMATE
+    }
+    return () => {
+      if (onReiniciarMATE && typeof onReiniciarMATE === 'object' && 'current' in onReiniciarMATE) {
+        onReiniciarMATE.current = null
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onReiniciarMATE])
 
   const confirmarReiniciarMATE = () => {
     setNombreAsesor('')
@@ -811,7 +872,7 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
     setEvoluciones({})
     setPerfilGenerado(null)
     setError(null)
-    setMetricas('')
+    setMetricas({ kpis: [], comentarios: '', pasa: '' })
     setCargando(false)
     setProcesandoPDF(false)
     setListoParaGuardar(false)
@@ -827,22 +888,6 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
     setMostrarModalReiniciar(false)
   }
 
-  // Componente para el botón de reiniciar (visible en todas las vistas excepto inicio)
-  const BotonReiniciar = () => {
-    if (paso === 'inicio') return null
-    return (
-      <button 
-        className="btn-reiniciar-mate"
-        onClick={handleReiniciarMATE}
-        title="Reiniciar MATE - Borrar todos los datos"
-      >
-        <svg className="btn-reiniciar-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M4 4V9H4.58152M19.9381 11C19.446 7.05369 16.0796 4 12 4C8.64262 4 5.76829 6.06817 4.58152 9M4.58152 9H9M20 20V15H19.4185M19.4185 15C18.2317 17.9318 15.3574 20 12 20C7.92038 20 4.55399 16.9463 4.06189 13M19.4185 15H15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-        <span className="btn-reiniciar-text">Reiniciar MATE</span>
-      </button>
-    )
-  }
 
   // Componente para el modal de confirmación
   const ModalReiniciar = () => {
@@ -889,7 +934,6 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
       <>
         <ModalReiniciar />
         <div className="evaluacion-container">
-          <BotonReiniciar />
           <div className="evaluacion-card">
           <h1>Evaluación de Competencias</h1>
           <p className="subtitulo">Sistema de evaluación basado en el Manual de Competencias</p>
@@ -924,7 +968,6 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
       <>
         <ModalReiniciar />
         <div className="evaluacion-container">
-          <BotonReiniciar />
         <div className="evaluacion-card">
           <div className="header-evaluacion">
             <h1>Tipo de Evaluación</h1>
@@ -998,7 +1041,6 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
       <>
         <ModalReiniciar />
         <div className="evaluacion-container">
-          <BotonReiniciar />
           <div className="evaluacion-card">
             <div className="header-evaluacion">
               <h1>MATE Anterior</h1>
@@ -1084,7 +1126,6 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
       <>
         <ModalReiniciar />
         <div className="evaluacion-container">
-          <BotonReiniciar />
         <div className="evaluacion-card">
           <div className="header-evaluacion">
             <h1>Resumen del MATE Anterior</h1>
@@ -1164,19 +1205,14 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
         // Si mantiene, no necesita respuestas
         if (evol.estado === 'mantiene') return true
         
-        // Si mejora o empeora, necesita responder todas las preguntas normales y de profundización
-        const preguntasNormalesCompletas = comp.preguntas.every((_, idx) => {
-          const key = `${comp.id}_${idx}`
-          return respuestas[key]?.trim() !== ''
-        })
-        
+        // Si mejora o empeora, solo necesita responder las preguntas de profundización
         const preguntasProfundizacion = PREGUNTAS_PROFUNDIZACION[evol.estado] || []
         const preguntasProfundizacionCompletas = preguntasProfundizacion.every((_, idx) => {
           const key = `${comp.id}_prof_${idx}`
           return respuestas[key]?.trim() !== ''
         })
         
-        return preguntasNormalesCompletas && preguntasProfundizacionCompletas
+        return preguntasProfundizacionCompletas
       } else {
         // Si no hay MATE anterior, validar respuestas normales
         return comp.preguntas.every((_, idx) => {
@@ -1190,15 +1226,14 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
       <>
         <ModalReiniciar />
         <div className="evaluacion-container">
-          <BotonReiniciar />
           <div className="evaluacion-card">
             <div className="header-evaluacion">
               <h1>Evaluación de Competencias</h1>
-            <p className="nombre-asesor">{tipoEvaluacion === 'asesor' ? 'Asesor' : 'Líder'}: <strong>{nombreAsesor}</strong></p>
-            {datosMATEAnterior && (
-              <p className="mate-anterior-info">Comparando con MATE anterior ({datosMATEAnterior.periodo || 'período anterior'})</p>
-            )}
-          </div>
+              <p className="nombre-asesor">{tipoEvaluacion === 'asesor' ? 'Asesor' : 'Líder'}: <strong>{nombreAsesor}</strong></p>
+              {datosMATEAnterior && (
+                <p className="mate-anterior-info">Comparando con MATE anterior ({datosMATEAnterior.periodo || 'período anterior'})</p>
+              )}
+            </div>
 
           <div className="preguntas-container">
             {competenciasFiltradas.map((competencia) => {
@@ -1262,31 +1297,8 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
 
                   {mostrarPreguntas && (
                     <div className="preguntas-competencia">
-                      <h3 className="seccion-preguntas-titulo">Preguntas de Evaluación</h3>
-                      {competencia.preguntas.map((pregunta, idx) => {
-                        const key = `${competencia.id}_${idx}`
-                        return (
-                          <div key={key} className="pregunta-item">
-                            <label className="pregunta-label">{pregunta}</label>
-                            <textarea
-                              className="respuesta-textarea"
-                              value={respuestas[key] || ''}
-                              onChange={(e) => handleCambiarRespuesta(key, e.target.value)}
-                              placeholder={
-                                infoAnterior && evolucion?.estado === 'mejora'
-                                  ? 'Describe cómo mejoró en esta competencia...'
-                                  : infoAnterior && evolucion?.estado === 'empeora'
-                                  ? 'Explica qué factores causaron el empeoramiento...'
-                                  : 'Escribe tu respuesta aquí...'
-                              }
-                              rows="4"
-                            />
-                          </div>
-                        )
-                      })}
-                      
-                      {/* Preguntas de profundización para mejora/empeora */}
-                      {evolucion?.estado && (evolucion.estado === 'mejora' || evolucion.estado === 'empeora') && (
+                      {/* Si mejora o empeora, solo mostrar preguntas de profundización */}
+                      {evolucion?.estado && (evolucion.estado === 'mejora' || evolucion.estado === 'empeora') ? (
                         <div className="preguntas-profundizacion">
                           <h3 className="seccion-preguntas-titulo profundizacion-titulo">
                             Preguntas de Profundización
@@ -1313,6 +1325,26 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
                             )
                           })}
                         </div>
+                      ) : (
+                        <>
+                          {/* Preguntas de Evaluación (solo cuando no hay mejora/empeora) */}
+                          <h3 className="seccion-preguntas-titulo">Preguntas de Evaluación</h3>
+                          {competencia.preguntas.map((pregunta, idx) => {
+                            const key = `${competencia.id}_${idx}`
+                            return (
+                              <div key={key} className="pregunta-item">
+                                <label className="pregunta-label">{pregunta}</label>
+                                <textarea
+                                  className="respuesta-textarea"
+                                  value={respuestas[key] || ''}
+                                  onChange={(e) => handleCambiarRespuesta(key, e.target.value)}
+                                  placeholder="Escribe tu respuesta aquí..."
+                                  rows="4"
+                                />
+                              </div>
+                            )
+                          })}
+                        </>
                       )}
                     </div>
                   )}
@@ -1325,15 +1357,245 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
           <div className="metricas-section">
             <h3 className="metricas-titulo">Métricas del {tipoEvaluacion === 'asesor' ? 'Asesor' : 'Líder'} (Opcional)</h3>
             <p className="metricas-descripcion">
-              Ingresa métricas relevantes del {tipoEvaluacion === 'asesor' ? 'asesor' : 'líder'} (KPIs, resultados, indicadores de desempeño, etc.) para hacer comparaciones más completas en el análisis.
+              {datosMATEAnterior?.metricas?.kpis && Array.isArray(datosMATEAnterior.metricas.kpis) && datosMATEAnterior.metricas.kpis.length > 0 
+                ? 'Compara y edita las métricas extraídas del PDF anterior. Selecciona el KPI (NPS, PEC, TMO), ingresa su valor y comentarios.'
+                : 'Ingresa métricas del asesor (KPIs: NPS, PEC, TMO) para hacer comparaciones más completas en el análisis.'}
             </p>
-            <textarea
-              className="metricas-textarea"
-              value={metricas}
-              onChange={(e) => setMetricas(e.target.value)}
-              placeholder="Ejemplo: NPS: 8.5, Tiempo promedio de resolución: 12 min, Satisfacción del cliente: 92%, Tasa de resolución en primer contacto: 85%, etc."
-              rows="5"
-            />
+            
+            {/* Interfaz comparativa de KPIs */}
+            {datosMATEAnterior?.metricas?.kpis && Array.isArray(datosMATEAnterior.metricas.kpis) && datosMATEAnterior.metricas.kpis.length > 0 ? (
+              <div className="kpis-comparativo-container">
+                <h4 className="kpis-subtitulo">KPIs Extraídos del PDF</h4>
+                {datosMATEAnterior.metricas.kpis.map((kpiPDF, index) => {
+                  const kpiActual = metricas.kpis[index] || {
+                    nombrePDF: kpiPDF.nombrePDF || '',
+                    nombre: kpiPDF.nombre || '',
+                    mes: kpiPDF.mes || '',
+                    pasa: kpiPDF.pasa || ''
+                  }
+                  
+                  return (
+                    <div key={index} className="kpi-comparativo-item">
+                      <div className="kpi-columna-izquierda">
+                        <div className="kpi-label">Del PDF anterior:</div>
+                        <div className="kpi-pdf-content">{kpiPDF.nombrePDF || 'KPI extraído del PDF'}</div>
+                      </div>
+                      <div className="kpi-columna-derecha">
+                        <div className="kpi-form-group">
+                          <label htmlFor={`kpi-nombre-${index}`}>KPI:</label>
+                          <select
+                            id={`kpi-nombre-${index}`}
+                            value={kpiActual.nombre || ''}
+                            onChange={(e) => {
+                              const nuevosKPIs = [...metricas.kpis]
+                              if (!nuevosKPIs[index]) {
+                                nuevosKPIs[index] = { ...kpiPDF, nombre: e.target.value }
+                              } else {
+                                nuevosKPIs[index] = { ...nuevosKPIs[index], nombre: e.target.value }
+                              }
+                              setMetricas({ ...metricas, kpis: nuevosKPIs })
+                            }}
+                            className="kpi-select"
+                          >
+                            <option value="">Seleccionar KPI...</option>
+                            <option value="NPS">NPS</option>
+                            <option value="PEC">PEC</option>
+                            <option value="TMO">TMO</option>
+                          </select>
+                        </div>
+                        <div className="kpi-form-group">
+                          <label htmlFor={`kpi-mes-${index}`}>Mes:</label>
+                          <select
+                            id={`kpi-mes-${index}`}
+                            value={kpiActual.mes || ''}
+                            onChange={(e) => {
+                              const nuevosKPIs = [...metricas.kpis]
+                              if (!nuevosKPIs[index]) {
+                                nuevosKPIs[index] = { ...kpiPDF, mes: e.target.value }
+                              } else {
+                                nuevosKPIs[index] = { ...nuevosKPIs[index], mes: e.target.value }
+                              }
+                              setMetricas({ ...metricas, kpis: nuevosKPIs })
+                            }}
+                            className="kpi-select"
+                          >
+                            <option value="">Seleccionar mes...</option>
+                            <option value="Enero">Enero</option>
+                            <option value="Febrero">Febrero</option>
+                            <option value="Marzo">Marzo</option>
+                            <option value="Abril">Abril</option>
+                            <option value="Mayo">Mayo</option>
+                            <option value="Junio">Junio</option>
+                            <option value="Julio">Julio</option>
+                            <option value="Agosto">Agosto</option>
+                            <option value="Septiembre">Septiembre</option>
+                            <option value="Octubre">Octubre</option>
+                            <option value="Noviembre">Noviembre</option>
+                            <option value="Diciembre">Diciembre</option>
+                          </select>
+                        </div>
+                        <div className="kpi-form-group">
+                          <label htmlFor={`kpi-pasa-${index}`}>Pasa:</label>
+                          <select
+                            id={`kpi-pasa-${index}`}
+                            value={kpiActual.pasa || ''}
+                            onChange={(e) => {
+                              const nuevosKPIs = [...metricas.kpis]
+                              if (!nuevosKPIs[index]) {
+                                nuevosKPIs[index] = { ...kpiPDF, pasa: e.target.value }
+                              } else {
+                                nuevosKPIs[index] = { ...nuevosKPIs[index], pasa: e.target.value }
+                              }
+                              setMetricas({ ...metricas, kpis: nuevosKPIs })
+                            }}
+                            className="kpi-select"
+                          >
+                            <option value="">Seleccionar...</option>
+                            <option value="SÍ">SÍ</option>
+                            <option value="NO">NO</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="kpis-vacio">
+                <p>No se encontraron KPIs en el PDF anterior. Puedes agregarlos manualmente.</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nuevosKPIs = [...metricas.kpis, { nombrePDF: '', nombre: '', mes: '', pasa: '' }]
+                    setMetricas({ ...metricas, kpis: nuevosKPIs })
+                  }}
+                  className="btn-agregar-kpi"
+                >
+                  + Agregar KPI
+                </button>
+              </div>
+            )}
+            
+            {/* Agregar KPIs manualmente si no hay PDF */}
+            {(!datosMATEAnterior?.metricas?.kpis || !Array.isArray(datosMATEAnterior.metricas.kpis) || datosMATEAnterior.metricas.kpis.length === 0) && Array.isArray(metricas.kpis) && metricas.kpis.length > 0 && (
+              <div className="kpis-manuales-container">
+                <h4 className="kpis-subtitulo">KPIs Manuales</h4>
+                {metricas.kpis.map((kpi, index) => (
+                  <div key={index} className="kpi-comparativo-item">
+                    <div className="kpi-columna-derecha">
+                      <div className="kpi-form-group">
+                        <label htmlFor={`kpi-manual-nombre-${index}`}>KPI:</label>
+                        <select
+                          id={`kpi-manual-nombre-${index}`}
+                          value={kpi.nombre || ''}
+                          onChange={(e) => {
+                            const nuevosKPIs = [...metricas.kpis]
+                            nuevosKPIs[index] = { ...nuevosKPIs[index], nombre: e.target.value }
+                            setMetricas({ ...metricas, kpis: nuevosKPIs })
+                          }}
+                          className="kpi-select"
+                        >
+                          <option value="">Seleccionar KPI...</option>
+                          <option value="NPS">NPS</option>
+                          <option value="PEC">PEC</option>
+                          <option value="TMO">TMO</option>
+                        </select>
+                      </div>
+                      <div className="kpi-form-group">
+                        <label htmlFor={`kpi-manual-mes-${index}`}>Mes:</label>
+                        <select
+                          id={`kpi-manual-mes-${index}`}
+                          value={kpi.mes || ''}
+                          onChange={(e) => {
+                            const nuevosKPIs = [...metricas.kpis]
+                            nuevosKPIs[index] = { ...nuevosKPIs[index], mes: e.target.value }
+                            setMetricas({ ...metricas, kpis: nuevosKPIs })
+                          }}
+                          className="kpi-select"
+                        >
+                          <option value="">Seleccionar mes...</option>
+                          <option value="Enero">Enero</option>
+                          <option value="Febrero">Febrero</option>
+                          <option value="Marzo">Marzo</option>
+                          <option value="Abril">Abril</option>
+                          <option value="Mayo">Mayo</option>
+                          <option value="Junio">Junio</option>
+                          <option value="Julio">Julio</option>
+                          <option value="Agosto">Agosto</option>
+                          <option value="Septiembre">Septiembre</option>
+                          <option value="Octubre">Octubre</option>
+                          <option value="Noviembre">Noviembre</option>
+                          <option value="Diciembre">Diciembre</option>
+                        </select>
+                      </div>
+                      <div className="kpi-form-group">
+                        <label htmlFor={`kpi-manual-pasa-${index}`}>Pasa:</label>
+                        <select
+                          id={`kpi-manual-pasa-${index}`}
+                          value={kpi.pasa || ''}
+                          onChange={(e) => {
+                            const nuevosKPIs = [...metricas.kpis]
+                            nuevosKPIs[index] = { ...nuevosKPIs[index], pasa: e.target.value }
+                            setMetricas({ ...metricas, kpis: nuevosKPIs })
+                          }}
+                          className="kpi-select"
+                        >
+                          <option value="">Seleccionar...</option>
+                          <option value="SÍ">SÍ</option>
+                          <option value="NO">NO</option>
+                        </select>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nuevosKPIs = metricas.kpis.filter((_, i) => i !== index)
+                          setMetricas({ ...metricas, kpis: nuevosKPIs })
+                        }}
+                        className="btn-eliminar-kpi"
+                      >
+                        Eliminar
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nuevosKPIs = [...metricas.kpis, { nombrePDF: '', nombre: '', mes: '', pasa: '' }]
+                    setMetricas({ ...metricas, kpis: nuevosKPIs })
+                  }}
+                  className="btn-agregar-kpi"
+                >
+                  + Agregar otro KPI
+                </button>
+              </div>
+            )}
+            
+            {/* Comentarios generales y Pasa */}
+            <div className="metricas-adicionales">
+              <div className="metricas-adicional-item">
+                <label htmlFor="metricas-comentarios">Comentarios Generales:</label>
+                <textarea
+                  id="metricas-comentarios"
+                  value={metricas.comentarios || ''}
+                  onChange={(e) => setMetricas({ ...metricas, comentarios: e.target.value })}
+                  placeholder="Comentarios generales sobre las métricas..."
+                  className="metricas-textarea"
+                  rows="3"
+                />
+              </div>
+              <div className="metricas-adicional-item">
+                <label htmlFor="metricas-pasa">Pasa:</label>
+                <input
+                  id="metricas-pasa"
+                  type="text"
+                  value={metricas.pasa || ''}
+                  onChange={(e) => setMetricas({ ...metricas, pasa: e.target.value })}
+                  placeholder="Pasa..."
+                  className="metricas-input"
+                />
+              </div>
+            </div>
           </div>
 
           <div className="acciones">
@@ -1373,7 +1635,6 @@ Formatea la respuesta de manera clara, profesional y estructurada, usando el len
       <>
         <ModalReiniciar />
         <div className="evaluacion-container">
-          <BotonReiniciar />
         <div className="evaluacion-card">
           <div className="header-evaluacion">
             <h1>Perfil de Competencias Generado</h1>

@@ -71,7 +71,12 @@ export function extraerDatosMATE(texto) {
   const datos = {
     nombreAsesor: '',
     periodo: '',
-    competencias: {}
+    competencias: {},
+    metricas: {
+      kpis: [], // Array de KPIs extraídos del PDF
+      comentarios: '', // Comentarios generales
+      pasa: '' // Pasa
+    }
   }
   
   // Extraer nombre
@@ -84,6 +89,12 @@ export function extraerDatosMATE(texto) {
   const periodoMatch = texto.match(/PERIODO\s+([^\n]+)/i)
   if (periodoMatch) {
     datos.periodo = periodoMatch[1].trim()
+  }
+  
+  // Extraer métricas: KPI, Comentarios y Pasa
+  const metricasExtraidas = extraerMetricas(texto)
+  if (metricasExtraidas) {
+    datos.metricas = metricasExtraidas
   }
   
   // Buscar secciones de categorías en el PDF (MANTENER, ALENTAR, TRANSFORMAR, EVITAR)
@@ -409,5 +420,157 @@ export function extraerDatosMATE(texto) {
   console.log(`Competencias encontradas en PDF: ${competenciasEncontradas.length}`)
   
   return datos
+}
+
+// Función para extraer métricas (KPI, Comentarios, Pasa) del PDF
+function extraerMetricas(texto) {
+  const textoNormalizado = texto.replace(/\s+/g, ' ')
+  const resultado = {
+    kpis: [],
+    comentarios: '',
+    pasa: ''
+  }
+  
+  // Buscar sección de KPI y extraer KPIs individuales
+  let textoKPI = ''
+  
+  // Buscar texto de la sección KPI
+  const indiceKPI = textoNormalizado.search(/KPI[s]?\s*[:\-•]?/i)
+  if (indiceKPI !== -1) {
+    const matchKPI = textoNormalizado.match(/KPI[s]?\s*[:\-•]?\s*/i)
+    const inicioContenido = indiceKPI + (matchKPI ? matchKPI[0].length : 4)
+    const textoDespuesKPI = textoNormalizado.substring(inicioContenido)
+    
+    // Buscar hasta encontrar "COMENTARIOS" o "PASA" o un límite razonable
+    const indices = [
+      textoDespuesKPI.search(/COMENTARIOS?\s*[:\-•]/i),
+      textoDespuesKPI.search(/PASA\s*[:\-•]/i),
+      textoDespuesKPI.search(/\n\s*[A-ZÁÉÍÓÚÑ]{8,}\s*[:\-•]/)
+    ].filter(idx => idx !== -1 && idx > 0)
+    
+    const finKPI = indices.length > 0 ? Math.min(...indices) : Math.min(1000, textoDespuesKPI.length)
+    
+    if (finKPI > 10) {
+      textoKPI = textoDespuesKPI.substring(0, finKPI).trim()
+    }
+  }
+  
+  // KPIs específicos a buscar: NPS, PEC, TMO
+  const kpisEspecificos = ['NPS', 'PEC', 'TMO']
+  const meses = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
+  
+  // Extraer KPIs individuales del texto buscando los KPIs específicos
+  if (textoKPI) {
+    kpisEspecificos.forEach(kpiNombre => {
+      // Buscar el KPI en el texto
+      if (new RegExp(kpiNombre, 'i').test(textoKPI)) {
+        // Buscar líneas que contengan el KPI
+        const lineas = textoKPI.split(/\n/)
+        let lineaConKPI = lineas.find(linea => new RegExp(kpiNombre, 'i').test(linea))
+        
+        if (!lineaConKPI) {
+          // Si no se encuentra en una sola línea, buscar en el contexto completo
+          const indiceKPI = textoKPI.search(new RegExp(kpiNombre, 'i'))
+          if (indiceKPI !== -1) {
+            const inicioContexto = Math.max(0, indiceKPI - 200)
+            const finContexto = Math.min(textoKPI.length, indiceKPI + 500)
+            lineaConKPI = textoKPI.substring(inicioContexto, finContexto)
+          }
+        }
+        
+        if (lineaConKPI) {
+          // Extraer el texto completo para mostrar en la vista comparativa
+          const textoPDF = lineaConKPI.trim()
+          
+          // Buscar mes en el texto (buscar el último mes mencionado)
+          let mesEncontrado = ''
+          let mesIndex = -1
+          meses.forEach((mes, index) => {
+            const regexMes = new RegExp(mes, 'i')
+            const match = textoPDF.match(regexMes)
+            if (match && (mesIndex === -1 || match.index > mesIndex)) {
+              mesEncontrado = mes
+              mesIndex = match.index
+            }
+          })
+          
+          // Buscar valor de Pasa (SÍ o NO) asociado al KPI
+          // Buscar "Pasa" seguido de SÍ o NO cerca del KPI
+          let pasaEncontrado = ''
+          const regexPasa = /Pasa\s*(?:[:•\-]?)\s*(SI|SÍ|NO|Si|No)/i
+          const matchPasa = textoPDF.match(regexPasa)
+          if (matchPasa) {
+            const pasaValue = matchPasa[1].toUpperCase()
+            pasaEncontrado = (pasaValue === 'SI' || pasaValue === 'SÍ') ? 'SÍ' : 'NO'
+          } else {
+            // Buscar en líneas cercanas después del KPI
+            const indiceKPI = textoPDF.indexOf(kpiNombre)
+            if (indiceKPI !== -1) {
+              const textoDespues = textoPDF.substring(indiceKPI + kpiNombre.length)
+              const matchPasaDespues = textoDespues.match(regexPasa)
+              if (matchPasaDespues) {
+                const pasaValue = matchPasaDespues[1].toUpperCase()
+                pasaEncontrado = (pasaValue === 'SI' || pasaValue === 'SÍ') ? 'SÍ' : 'NO'
+              }
+            }
+          }
+          
+          // Verificar que no se haya agregado ya este KPI
+          const yaExiste = resultado.kpis.some(k => k.nombre === kpiNombre)
+          if (!yaExiste) {
+            resultado.kpis.push({
+              nombrePDF: textoPDF, // Texto extraído del PDF para mostrar
+              nombre: kpiNombre, // KPI seleccionado (NPS, PEC, TMO)
+              mes: mesEncontrado || '',
+              pasa: pasaEncontrado || ''
+            })
+          }
+        }
+      }
+    })
+  }
+  
+  // Buscar sección de Comentarios
+  const indiceComentarios = textoNormalizado.search(/COMENTARIOS?\s*[:\-•]?/i)
+  if (indiceComentarios !== -1) {
+    const matchComentarios = textoNormalizado.match(/COMENTARIOS?\s*[:\-•]?\s*/i)
+    const inicioContenido = indiceComentarios + (matchComentarios ? matchComentarios[0].length : 11)
+    const textoDespuesComentarios = textoNormalizado.substring(inicioContenido)
+    
+    // Buscar hasta encontrar "PASA" o un límite razonable
+    const indices = [
+      textoDespuesComentarios.search(/PASA\s*[:\-•]/i),
+      textoDespuesComentarios.search(/\n\s*[A-ZÁÉÍÓÚÑ]{8,}\s*[:\-•]/)
+    ].filter(idx => idx !== -1 && idx > 0)
+    
+    const finComentarios = indices.length > 0 ? Math.min(...indices) : Math.min(500, textoDespuesComentarios.length)
+    
+    if (finComentarios > 10) {
+      resultado.comentarios = textoDespuesComentarios.substring(0, finComentarios).trim()
+    }
+  }
+  
+  // Buscar sección de Pasa
+  const indicePasa = textoNormalizado.search(/PASA\s*[:\-•]?/i)
+  if (indicePasa !== -1) {
+    const matchPasa = textoNormalizado.match(/PASA\s*[:\-•]?\s*/i)
+    const inicioContenido = indicePasa + (matchPasa ? matchPasa[0].length : 4)
+    const textoDespuesPasa = textoNormalizado.substring(inicioContenido)
+    
+    // Buscar hasta encontrar otra sección o un límite razonable
+    const finPasaMatch = textoDespuesPasa.search(/\n\s*[A-ZÁÉÍÓÚÑ]{8,}\s*[:\-•]/)
+    const finPasa = finPasaMatch !== -1 && finPasaMatch > 2 ? finPasaMatch : Math.min(300, textoDespuesPasa.length)
+    
+    if (finPasa > 2) {
+      resultado.pasa = textoDespuesPasa.substring(0, finPasa).trim()
+    }
+  }
+  
+  // Retornar resultado si hay algo encontrado
+  if (resultado.kpis.length > 0 || resultado.comentarios || resultado.pasa) {
+    return resultado
+  }
+  
+  return null
 }
 
